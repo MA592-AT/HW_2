@@ -1,0 +1,23 @@
+---
+title: "HW_2"
+author: "Amie Thomas"
+date: "2024-02-21"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#load in data
+ bmi_data <- read.csv("nhanes_bmi.csv")
+```
+
+```{r}
+#A) estimate propensity score
+
+
+
+
+```
