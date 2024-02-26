@@ -1,7 +1,7 @@
 ---
 title: "HW_2"
 author: "Amie Thomas"
-date: "2024-02-21"
+date: "2024-02-23"
 output: pdf_document
 ---
 
@@ -10,14 +10,39 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ```{r}
-#load in data
- bmi_data <- read.csv("nhanes_bmi.csv")
+library(tidyverse)
+library(boot)
+
+#load in the data
+bmi <- read.csv("nhanes_bmi.csv")
 ```
 
 ```{r}
-#A) estimate propensity score
+#1A estimate the propensity score
 
+#split data 
+set.seed(592)
+nuisance_indices <- sample(nrow(bmi), size = nrow(bmi) / 2)
+nuisance <- bmi_data[nuisance_indices, ]
+effect <- bmi_data[-nuisance_indices, ]
 
+#model to estimats the probability of treatment assignment for each individual in the dataset
+ps_mod <- glm(School_meal ~ .-BMI, family = binomial(link = logit), data = nuisance)
 
+prop_score <- predict(ps_mod, nuisance, type = "response")
 
 ```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
