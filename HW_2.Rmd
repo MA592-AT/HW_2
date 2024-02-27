@@ -23,14 +23,21 @@ bmi <- read.csv("nhanes_bmi.csv")
 #split data 
 set.seed(592)
 nuisance_indices <- sample(nrow(bmi), size = nrow(bmi) / 2)
-nuisance <- bmi_data[nuisance_indices, ]
-effect <- bmi_data[-nuisance_indices, ]
+nuisance <- bmi[nuisance_indices, ]
+effect <- bmi[-nuisance_indices, ]
 
-#model to estimats the probability of treatment assignment for each individual in the dataset
+#model to estimates the probability of treatment assignment for each individual in the dataset
 ps_mod <- glm(School_meal ~ .-BMI, family = binomial(link = logit), data = nuisance)
 
 prop_score <- predict(ps_mod, nuisance, type = "response")
 
+#put PS in data
+nuisance$ps <- prop_score
+
+#calculate weights
+weights <- ifelse(nuisance$BMI == 1, 1 / nuisance$ps, 1 / (1 - nuisance$ps))
+
+placeholder <- mean(((weights/ps)-1)*age)
 ```
 
 
