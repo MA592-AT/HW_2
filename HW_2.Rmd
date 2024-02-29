@@ -18,34 +18,267 @@ bmi <- read.csv("nhanes_bmi.csv")
 ```
 
 ```{r}
-#1A estimate the propensity score
+#1A estimate propensity score and satisfy weighted balancing property
 
 #split data 
 set.seed(592)
-nuisance_indices <- sample(nrow(bmi), size = nrow(bmi) / 2)
-nuisance <- bmi[nuisance_indices, ]
-effect <- bmi[-nuisance_indices, ]
 
-#model to estimates the probability of treatment assignment for each individual in the dataset
-ps_mod <- glm(School_meal ~ .-BMI, family = binomial(link = logit), data = nuisance)
+co_means <- function(data, indices){
+  nuisance_indices <- sample(nrow(data), size = nrow(data) / 2)
+  nuisance <- data[nuisance_indices, ]
+  effect <- data[-nuisance_indices, ]
+  
+  # Model to estimate the probability of treatment assignment for each individual in the dataset
+  ps_mod <- glm(School_meal ~ .-BMI, family = binomial(link = logit), data = nuisance)
+  
+  prop_score <- predict(ps_mod, effect, type = "response")
+  
+  # Put PS in data
+  effect$ps <- prop_score
+  
+  # Calculate means for each covariate
+  age <- mean(((effect$School_meal/effect$ps)-1)*effect$age)
+  cs <- mean(((effect$School_meal/effect$ps)-1)*effect$ChildSex)
+  black <- mean(((effect$School_meal/effect$ps)-1)*effect$black)
+  mexam <- mean(((effect$School_meal/effect$ps)-1)*effect$mexam)
+  pir <- mean(((effect$School_meal/effect$ps)-1)*effect$pir200_plus)
+  wic <- mean(((effect$School_meal/effect$ps)-1)*effect$WIC)
+  fs <- mean(((effect$School_meal/effect$ps)-1)*effect$Food_Stamp)
+  fsdc <- mean(((effect$School_meal/effect$ps)-1)*effect$fsdchbi)
+  ai <- mean(((effect$School_meal/effect$ps)-1)*effect$AnyIns)
+  rs <- mean(((effect$School_meal/effect$ps)-1)*effect$RefSex)
+  ra <- mean(((effect$School_meal/effect$ps)-1)*effect$RefAge)
+  
+  results <- c(age, cs, black, mexam, pir, wic, fs, fsdc, ai, rs, ra)
+  
+  return(results)
+}
 
-prop_score <- predict(ps_mod, nuisance, type = "response")
+all_boots <- suppressWarnings(boot(data = bmi, statistic = co_means, R = 1000)) # Bootstrap
 
-#put PS in data
-nuisance$ps <- prop_score
+# CI
+ci_list <- lapply(1:11, function(i) {
+  quantile(all_boots$t[, i], probs = c(0.025, 0.975)) 
+})
 
-#calculate weights
-weights <- ifelse(nuisance$BMI == 1, 1 / nuisance$ps, 1 / (1 - nuisance$ps))
+# make into list
+boot_results <- list()
+boot_results$con_int <- ci_list
 
-placeholder <- mean(((weights/ps)-1)*age)
+
+boot_results
+
+# put into a table
+ci_table <- data.frame(
+  Covariate = c("age", "ChildSex", "black", "mexam", "pir200_plus", 
+                "WIC", "Food_Stamp", "fsdchbi", "AnyIns", "RefSex", "RefAge"),
+  Lower_CI = unlist(lapply(ci_list, function(x) x[1])),
+  Upper_CI = unlist(lapply(ci_list, function(x) x[2]))
+)
+
+print(ci_table)
+```
+
+```{r}
+#1b OR
+
+set.seed(592)
+
+bs_or_function <- function(data, indices) {
+  boot_sample <- data[indices, ]
+
+  nuisance_indices <- sample(nrow(data), size = nrow(data) / 2)
+  nuisance <- data[nuisance_indices, ]
+  effect <- data[-nuisance_indices, ]
+
+  ps_mod <- glm(School_meal ~ . - BMI, data = nuisance, family = binomial())
+  effect$ps <- predict(ps_mod, newdata = effect, type = "response")
+ 
+  or_mod_1 <- lm(BMI ~ . - School_meal, data = nuisance[nuisance$School_meal == 1, ])
+  or_mod_0 <- lm(BMI ~ . - School_meal, data = nuisance[nuisance$School_meal == 0, ])
+ 
+  effect$mu_1 <- predict(or_mod_1, newdata = effect)
+  effect$mu_0 <- predict(or_mod_0, newdata = effect)
+ 
+  ate_estimate <- mean(effect$mu_1 - effect$mu_0)
+ 
+  return(ate_estimate)
+}
+
+boot_results <- suppressWarnings(boot(data = bmi, statistic = bs_or_function, R = 1000))
+
+boot_se <- sd(boot_results$t)
+print(boot_se)
+
+```
+
+```{r}
+#1b IPW
+
+set.seed(592)
+
+bs_function_IPW <- function(data, indices) {
+  boot_sample <- data[indices, ]
+
+  nuisance_indices <- sample(nrow(data), size = nrow(data) / 2)
+  nuisance <- data[nuisance_indices, ]
+  effect <- data[-nuisance_indices, ]
+
+  ps_mod <- glm(School_meal ~ . - BMI, data = nuisance, family = binomial())
+  effect$ps <- predict(ps_mod, newdata = effect, type = "response")
+ 
+  dr_mod_1 <- lm(BMI ~ . - School_meal, data = nuisance[nuisance$School_meal == 1, ])
+  dr_mod_0 <- lm(BMI ~ . - School_meal, data = nuisance[nuisance$School_meal == 0, ])
+  effect$mu_1 <- predict(dr_mod_1, newdata = effect)
+  effect$mu_0 <- predict(dr_mod_0, newdata = effect)
+ 
+  IPW_estimate <-  mean((effect$School_meal)/(effect$ps)*(effect$BMI)) - 
+                   mean((1-effect$School_meal)/ (1-(effect$ps)*(effect$BMI)))
+  
+ 
+  return(IPW_estimate)
+}
+
+boot_results_IPW <- suppressWarnings(boot(data = bmi, statistic = bs_function_IPW, R = 1000))
+
+boot_se_dr <- sd(boot_results_IPW$t)
+print(boot_se_dr)
+
+```
+
+```{r}
+#1b Hajek estimator
+
+set.seed(592)
+
+bs_function_haj <- function(data, indices) {
+  boot_sample <- data[indices, ]
+
+  nuisance_indices <- sample(nrow(data), size = nrow(data) / 2)
+  nuisance <- data[nuisance_indices, ]
+  effect <- data[-nuisance_indices, ]
+
+  ps_mod <- glm(School_meal ~ . - BMI, data = nuisance, family = binomial())
+  effect$ps <- predict(ps_mod, newdata = effect, type = "response")
+ 
+  haj_mod_1 <- lm(BMI ~ . - School_meal, data = nuisance[nuisance$School_meal == 1, ])
+  haj_mod_0 <- lm(BMI ~ . - School_meal, data = nuisance[nuisance$School_meal == 0, ])
+  effect$mu_1 <- predict(haj_mod_1, newdata = effect)
+  effect$mu_0 <- predict(haj_mod_0, newdata = effect)
+ 
+  haj_estimate <- mean(((effect$School_meal)/(effect$ps))/ (mean((effect$School_meal)/(effect$ps))) * (effect$bmi)) - mean(((1-effect$School_meal)/(1-effect$ps))/ (mean((1-effect$School_meal)/(1-effect$ps))) *(effect$bmi))
+  
+ 
+  return(haj_estimate)
+}
+
+boot_results_haj <- suppressWarnings(boot(data = bmi, statistic = bs_function_haj, R = 1000))
+
+boot_se_haj <- sd(boot_results_IPW$t)
+print(boot_se_haj)
+```
+
+```{r}
+#1b DR estimator
+
+set.seed(592)
+
+bs_function_dr <- function(data, indices) {
+  boot_sample <- data[indices, ]
+
+  nuisance_indices <- sample(nrow(data), size = nrow(data) / 2)
+  nuisance <- data[nuisance_indices, ]
+  effect <- data[-nuisance_indices, ]
+
+  ps_mod <- glm(School_meal ~ . - BMI, data = nuisance, family = binomial())
+  effect$ps <- predict(ps_mod, newdata = effect, type = "response")
+ 
+  dr_mod_1 <- lm(BMI ~ . - School_meal, data = nuisance[nuisance$School_meal == 1, ])
+  dr_mod_0 <- lm(BMI ~ . - School_meal, data = nuisance[nuisance$School_meal == 0, ])
+  effect$mu_1 <- predict(dr_mod_1, newdata = effect)
+  effect$mu_0 <- predict(dr_mod_0, newdata = effect)
+ 
+  dr_estimate <- mean(
+    (effect$School_meal * (effect$BMI - effect$mu_1)) / effect$ps +
+    ((1 - effect$School_meal) * (effect$BMI - effect$mu_0)) / (1 - effect$ps) +
+    effect$mu_1 - effect$mu_0
+  )
+ 
+  return(dr_estimate)
+}
+
+boot_results_dr <- suppressWarnings(boot(data = bmi, statistic = bs_function_dr, R = 1000))
+
+boot_se_dr <- sd(boot_results_dr$t)
+print(boot_se_dr)
 ```
 
 
+```{r}
+#1c
+For the DR estimator, also obtain the estimate of the asymptotic variance using the estimator provided in the lecture notes and compare it with the bootstrap.
 
 
+```
+
+```{r}
+#1d
+
+#(d) Evaluate the causal effect using matching estimator (using Mahalanobis distance)
+#for M ∈ {3, 6, 10}
+formula <- as.formula(School_meal ~ .-BMI,)
+m.out0 <- matchit(formula=formula,
+                 data=data,
+                 method= "nearest",
+                 ratio = 3,
+                 distance='mahalanobis')
+site_df_matched0 <- get_matches(m.out0,data=data)
 
 
+m.out3 <- matchit(formula=formula,
+                 data=data,
+                 method= "nearest",
+                 ratio = 3,
+                 distance='mahalanobis')
+site_df_matched3 <- get_matches(m.out3,data=data)
 
+
+m.out6 <- matchit(formula=formula,
+                 data=data,
+                 method= "nearest",
+                 ratio = 3,
+                 distance='mahalanobis')
+site_df_matched6 <- get_matches(m.out6,data=data)
+
+
+m.out10 <- matchit(formula=formula,
+                 data=data,
+                 method= "nearest",
+                 ratio = 3,
+                 distance='mahalanobis')
+
+site_df_matched10 <- get_matches(m.out10,data=data)
+
+fit3 <- lm(BMI ~ School_meal * (age + ChildSex + black), data = site_df_matched3)
+fit6 <- lm(BMI ~ School_meal * (age + ChildSex + black), data = site_df_matched6)
+fit10 <- lm(BMI ~ School_meal * (age + ChildSex + black), data = site_df_matched10)
+
+avg_comparisons(fit3,
+                variables = "School_meal",
+                vcov = ~subclass,
+                newdata = subset(site_df_matched, School_meal == 1),
+                weights = "weights")
+
+
+```
+
+```{r}
+#1e
+
+#Make a conclusion about whether participation in school meal programs lead to an increase in BMI for school children. 
+
+
+```
 
 
 
